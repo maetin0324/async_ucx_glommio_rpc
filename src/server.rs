@@ -1,17 +1,17 @@
 #![allow(unused_imports)]
-use std::{mem::MaybeUninit, rc::Rc, sync::atomic::AtomicU64};
+use std::{cell::RefCell, mem::MaybeUninit, rc::Rc, sync::{atomic::AtomicU64, Arc}};
 
 use anyhow::Ok;
 use async_ucx::ucp::*;
 use tracing::{debug, info, warn};
-use glommio::io::{BufferedFile, DmaBuffer, DmaFile};
+use glommio::{io::{BufferedFile, DmaBuffer, DmaFile, OpenOptions}, task::JoinHandle};
 use tracing_subscriber::field::debug;
 
-static BUFFER_SIZE: usize = 4 * 1024;
+static BUFFER_SIZE: usize = 1024 * 1024;
 static OFFSET: usize = 8;
 static TOTAL_SIZE: usize = BUFFER_SIZE + OFFSET;
-static SEND_SIZE: usize = 1 * 1024 * 1024 * 1024;
-// static TRAGET_PATH: &str = "test.txt";
+static SEND_SIZE: usize = 1024 * 1024 * 1024;
+static TRAGET_PATH: &str = "test.txt";
 // static COMM_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub async fn run_server() -> anyhow::Result<()>{
@@ -36,8 +36,13 @@ pub async fn run_server() -> anyhow::Result<()>{
     debug!(count, "Connection accepted");
     let ep = worker.accept(conn).await?;
     debug!("Connection established");
+    // glommio::spawn_local(async move { 
+    //   if let Err(e) = handler(ep, count).await {
+    //     warn!("handler error: {:?}", e);
+    //   }
+    // }).detach();
     glommio::spawn_local(async move { 
-      if let Err(e) = handler(ep, count).await {
+      if let Err(e) = write_handler(ep, count).await {
         warn!("handler error: {:?}", e);
       }
     }).detach();
@@ -74,16 +79,72 @@ async fn handler(ep: Endpoint, _count: u64) -> anyhow::Result<usize> {
     if count % (SEND_SIZE / BUFFER_SIZE) == 0 {
       debug!("count: {:?}, time elapsed: {:?}", count, now.elapsed());
       now = std::time::Instant::now();
+      break;
     }
   }
   info!("Time elapsed: {:?}, count: {:?}", now.elapsed(), count);
   Ok(count)
 }
 
-// async fn write_handler(ep: Rc<Endpoint>, file: Rc<DmaFile>) -> anyhow::Result<()> {
-//   let mut buf = file.alloc_dma_buffer(BUFFER_SIZE);
-//   let mut uninit_buf_ref = unsafe {
-//     std::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(buf.as_mut())
-//   };
-//   Ok(())
-// }
+async fn write_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
+  let file = DmaFile::create(TRAGET_PATH)
+    .await
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+  let file = Arc::new(file);
+
+  let mut recv_buf: Vec<MaybeUninit<u8>> = Vec::with_capacity(TOTAL_SIZE);
+  recv_buf.resize(TOTAL_SIZE, MaybeUninit::uninit());
+  let mut count = 0;
+
+  // let mut uninit_buf_ref = unsafe {
+  //   std::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(buf.as_mut())
+  // };
+
+  let tasks: RefCell<Vec<JoinHandle<()>>> = RefCell::new(Vec::new());
+
+  let mut now = std::time::Instant::now();
+  loop {
+    ep.worker().tag_recv(100, &mut recv_buf).await?;
+    let file_buf = file.alloc_dma_buffer(BUFFER_SIZE);
+    let (offset_buf, data)  = recv_buf.split_at(OFFSET);
+
+    let offset_buf = unsafe {
+      std::mem::transmute::<&[MaybeUninit<u8>], &[u8]>(&offset_buf)
+    };
+    let offset = u64::from_le_bytes(offset_buf.try_into().unwrap());
+
+    let mut data = unsafe {
+      std::mem::transmute::<&[MaybeUninit<u8>], &[u8]>(&data)
+    };
+
+    std::mem::swap(&mut data, &mut file_buf.as_ref());
+
+    let file_clone = file.clone();
+
+    let task = glommio::spawn_local(async move {
+      if let Err(e) = write_task(file_clone, file_buf, offset).await {
+        warn!("write_task error: {:?}", e);
+      };
+    }).detach();
+
+    tasks.borrow_mut().push(task);
+    count += 1;
+
+    if count % 1024 == 0 {
+      futures::future::join_all(tasks.borrow_mut().drain(..)).await;
+    }
+
+    if count % (SEND_SIZE / BUFFER_SIZE) == 0 {
+      debug!("count: {:?}, time elapsed: {:?}", count, now.elapsed());
+      now = std::time::Instant::now();
+    }
+  }
+  // Ok(())
+}
+
+async fn write_task(file: Arc<DmaFile>, buf: DmaBuffer, pos: u64) -> anyhow::Result<()> {
+  file.write_at(buf, pos).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+  // file.write_at(buf, pos).await.unwrap();
+  Ok(())
+}

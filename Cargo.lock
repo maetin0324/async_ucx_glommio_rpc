@@ -76,6 +76,7 @@ dependencies = [
  "async-ucx",
  "futures",
  "glommio",
+ "libc",
  "tracing",
  "tracing-subscriber",
 ]
