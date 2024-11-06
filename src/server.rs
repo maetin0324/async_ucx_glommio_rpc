@@ -43,7 +43,10 @@ pub async fn run_server() -> anyhow::Result<()>{
     //   }
     // }).detach();
     glommio::spawn_local(async move { 
-      if let Err(e) = write_handler(ep, count).await {
+      // if let Err(e) = write_handler(ep, count).await {
+      //   warn!("handler error: {:?}", e);
+      // }
+      if let Err(e) = read_handler(ep, count).await {
         warn!("handler error: {:?}", e);
       }
     }).detach();
@@ -152,8 +155,6 @@ async fn write_task(file: Arc<DmaFile>, buf: DmaBuffer, pos: u64) -> anyhow::Res
   // file.write_at(buf, pos).await.unwrap();
   Ok(())
 }
-<<<<<<< Updated upstream
-=======
 
 async fn read_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
   let file = DmaFile::create(TRAGET_PATH)
@@ -170,38 +171,34 @@ async fn read_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
   //   std::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(buf.as_mut())
   // };
 
-  let tasks: RefCell<Vec<JoinHandle<()>>> = RefCell::new(Vec::new());
+  // let tasks: RefCell<Vec<JoinHandle<()>>> = RefCell::new(Vec::new());
+  let mut tasks = FuturesUnordered::new();
+  let ep = Arc::new(ep);
 
   let mut now = std::time::Instant::now();
   loop {
-    ep.worker().tag_recv(100, &mut recv_buf).await?;
-    let file_buf = file.alloc_dma_buffer(BUFFER_SIZE);
-    let (offset_buf, data)  = recv_buf.split_at(OFFSET);
+    ep.worker().tag_recv(200, &mut recv_buf).await?;
 
     let offset_buf = unsafe {
-      std::mem::transmute::<&[MaybeUninit<u8>], &[u8]>(&offset_buf)
+      std::mem::transmute::<&[MaybeUninit<u8>], &[u8]>(&recv_buf)
     };
     let offset = u64::from_le_bytes(offset_buf.try_into().unwrap());
 
-    let mut data = unsafe {
-      std::mem::transmute::<&[MaybeUninit<u8>], &[u8]>(&data)
-    };
-
-    std::mem::swap(&mut data, &mut file_buf.as_ref());
-
     let file_clone = file.clone();
+    let ep_clone = ep.clone();
 
     let task = glommio::spawn_local(async move {
-      if let Err(e) = write_task(file_clone, file_buf, offset).await {
-        warn!("write_task error: {:?}", e);
+      if let Err(e) = read_task(file_clone, ep_clone, offset).await {
+        warn!("read_task error: {:?}", e);
       };
     }).detach();
 
-    tasks.borrow_mut().push(task);
+    tasks.push(task);
     count += 1;
 
-    if count % 1024 == 0 {
-      futures::future::join_all(tasks.borrow_mut().drain(..)).await;
+    if count % 8192 == 0 {
+      // futures::future::join_all(tasks.borrow_mut().drain(..)).await;
+      while let Some(_) = tasks.next().await {}
     }
 
     if count % (SEND_SIZE / BUFFER_SIZE) == 0 {
@@ -210,4 +207,13 @@ async fn read_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
     }
   }
 }
->>>>>>> Stashed changes
+
+async fn read_task(file: Arc<DmaFile>, ep: Arc<Endpoint>, pos: u64) -> anyhow::Result<()> {
+  let ret = file.read_at(pos, BUFFER_SIZE)
+    .await
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+  // file.write_at(buf, pos).await.unwrap();
+  // let ret = ret.as_ref().to_vec();
+  // ep.tag_send(201, &ret).await?;
+  Ok(())
+}
