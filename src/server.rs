@@ -10,8 +10,8 @@ use tracing_subscriber::field::debug;
 static BUFFER_SIZE: usize = 1024 * 1024;
 static OFFSET: usize = 8;
 static TOTAL_SIZE: usize = BUFFER_SIZE + OFFSET;
-static SEND_SIZE: usize = 1024 * 1024 * 1024;
-static TRAGET_PATH: &str = "test.txt";
+static SEND_SIZE: usize = 128 * 1024 * 1024 * 1024;
+static TRAGET_PATH: &str = "/scr/rmaeda/tmp/test.txt";
 // static COMM_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub async fn run_server() -> anyhow::Result<()>{
@@ -92,6 +92,7 @@ async fn write_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
   let file = Arc::new(file);
+  debug!("File opend in write handler");
 
   let mut recv_buf: Vec<MaybeUninit<u8>> = Vec::with_capacity(TOTAL_SIZE);
   recv_buf.resize(TOTAL_SIZE, MaybeUninit::uninit());
@@ -131,7 +132,7 @@ async fn write_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
     tasks.borrow_mut().push(task);
     count += 1;
 
-    if count % 1024 == 0 {
+    if count % 8192 == 0 {
       futures::future::join_all(tasks.borrow_mut().drain(..)).await;
     }
 

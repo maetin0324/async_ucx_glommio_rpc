@@ -6,7 +6,7 @@ use tracing::debug;
 static BUFFER_SIZE: usize = 1024 * 1024;
 static OFFSET: usize = 8;
 static TOTAL_SIZE: usize = BUFFER_SIZE + OFFSET;
-static SEND_SIZE: usize =  1024 * 1024 * 1024;
+static SEND_SIZE: usize =  128 * 1024 * 1024 * 1024;
 
 pub async fn run_client(addr: &str) -> anyhow::Result<()> {
   let ctx = Context::new()?;
