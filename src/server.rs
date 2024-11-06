@@ -3,6 +3,7 @@ use std::{cell::RefCell, mem::MaybeUninit, rc::Rc, sync::{atomic::AtomicU64, Arc
 
 use anyhow::Ok;
 use async_ucx::ucp::*;
+use futures::{stream::FuturesUnordered, StreamExt};
 use tracing::{debug, info, warn};
 use glommio::{io::{BufferedFile, DmaBuffer, DmaFile, OpenOptions}, task::JoinHandle};
 use tracing_subscriber::field::debug;
@@ -102,7 +103,8 @@ async fn write_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
   //   std::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(buf.as_mut())
   // };
 
-  let tasks: RefCell<Vec<JoinHandle<()>>> = RefCell::new(Vec::new());
+  // let tasks: RefCell<Vec<JoinHandle<()>>> = RefCell::new(Vec::new());
+  let mut tasks = FuturesUnordered::new();
 
   let mut now = std::time::Instant::now();
   loop {
@@ -129,11 +131,12 @@ async fn write_handler(ep: Endpoint, _: u64) -> anyhow::Result<()> {
       };
     }).detach();
 
-    tasks.borrow_mut().push(task);
+    tasks.push(task);
     count += 1;
 
     if count % 8192 == 0 {
-      futures::future::join_all(tasks.borrow_mut().drain(..)).await;
+      // futures::future::join_all(tasks.borrow_mut().drain(..)).await;
+      while let Some(_) = tasks.next().await {}
     }
 
     if count % (SEND_SIZE / BUFFER_SIZE) == 0 {
